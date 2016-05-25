@@ -474,6 +474,24 @@ private:
 //
 // We have m_dec_idx[idx][dst] = src to get our original character back.
 //
+// For the latin1_german2_ci, expansions exist. Meaning that certain
+// characters expand to two or more characters when creating the sort order.
+// For example, ß -> ss. In this case, we will have,
+//      s   -> (S, 0)
+//      S   -> (S, 1)
+//      ß   -> (S, 2)
+//
+// For the inverse, we have
+//      (S, 0) -> s
+//      (S, 1) -> S
+//      (S, 2) -> ß
+//
+// But for (S, 2), we need to know to skip the next character. To support
+// this, add another mapping
+//      (dst, idx) -> skip
+//
+// Usually, 'skip' will be 0, but for (S, 2), skip will be 1 to denote that
+// the next 1 character should be skipped. This is in the m_dec_skip variable.
 struct Rdb_collation_codec
 {
   const my_core::CHARSET_INFO *m_cs;
@@ -486,6 +504,7 @@ struct Rdb_collation_codec
 
   std::array<uchar, 256> m_dec_size;
   std::vector<std::array<uchar, 256>> m_dec_idx;
+  std::map<std::pair<uchar, uchar>, uchar> m_dec_skip;
 };
 
 extern mysql_mutex_t rdb_collation_data_mutex;

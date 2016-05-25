@@ -2450,6 +2450,9 @@ static const Rdb_collation_codec *rdb_init_collation_mapping(
         cur->m_unpack_func=
           {{ rdb_unpack_simple_varchar_space_pad, rdb_unpack_simple }};
       }
+      else if (cs->coll == &my_collation_8bit_simple_ci_handler)
+      {
+      }
       else
       {
         // Out of luck for now.

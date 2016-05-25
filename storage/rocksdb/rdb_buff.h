@@ -449,4 +449,139 @@ class Rdb_bit_reader
   }
 };
 
+/*
+  (RDB_ESCAPE_LENGTH-1) must be an even number so that pieces of lines are not
+  split in the middle of an UTF-8 character. See the implementation of
+  rdb_unpack_binary_or_utf8_varchar.
+*/
+
+const uint RDB_ESCAPE_LENGTH= 9;
+static_assert((RDB_ESCAPE_LENGTH - 1) % 2 == 0,
+              "RDB_ESCAPE_LENGTH-1 must be even.");
+
+// This is a helper class used to read the memcomparable form of varchars by
+// undoing the encoding done in rdb_pack_with_varchar_encoding.
+class Rdb_varchar_reader
+{
+  Rdb_string_reader *m_reader;
+  const uchar *m_buffer;
+  uint m_bytes_left;
+  size_t *m_dst_len;
+  bool m_finished;
+  // Returns:
+  // -1 for unpacking error
+  //  0 for no more characters
+  //  n for n characters in buffer
+  int refreshBuffer()
+  {
+    if (m_bytes_left > 0)
+    {
+      return m_bytes_left;
+    }
+
+    if (m_finished)
+    {
+      return 0;
+    }
+
+    m_buffer= (const uchar *)m_reader->read(RDB_ESCAPE_LENGTH);
+    if (m_buffer == nullptr) {
+      // We never read too much, since the m_finished flag should be set if
+      // we've reached the end.
+      return -1;
+    }
+
+    // number of padding bytes
+    uchar pad= 255 - m_buffer[RDB_ESCAPE_LENGTH - 1];
+    m_bytes_left= RDB_ESCAPE_LENGTH - 1 - pad;
+
+    if (m_bytes_left > RDB_ESCAPE_LENGTH - 1 || *m_dst_len < m_bytes_left)
+    {
+      return -1;
+    }
+
+    if (m_bytes_left < RDB_ESCAPE_LENGTH - 1)
+    {
+      m_finished= true;
+    }
+
+    return m_bytes_left;
+  }
+ public:
+  Rdb_varchar_reader(Rdb_string_reader *reader, size_t *dst_len)
+    : m_reader(reader),
+      m_buffer(nullptr),
+      m_bytes_left(0),
+      m_dst_len(dst_len),
+      m_finished(false)
+  {
+  }
+
+  int readByte(uchar *out)
+  {
+    int ret= refreshBuffer();
+    if (ret <= 0)
+    {
+      return ret;
+    }
+    DBUG_ASSERT(m_bytes_left > 0);
+    *out= *m_buffer;
+    m_bytes_left--;
+    m_buffer++;
+    return 1;
+  }
+
+  // readWChar reads two bytes.
+  int readWChar(my_wc_t *out)
+  {
+    int ret;
+    uchar lo, hi;
+    if ((ret= readByte(&hi)) <= 0)
+    {
+      return ret;
+    }
+
+    // Dangling bits of character should be an error.
+    if ((ret= readByte(&lo)) <= 0)
+    {
+      return -1;
+    }
+
+    *out= (hi << 8) | lo;
+    return 2;
+  }
+
+  int readChunk(const uchar **out)
+  {
+    int ret = refreshBuffer();
+    if (ret <= 0)
+    {
+      return ret;
+    }
+    *out= m_buffer;
+    ret= m_bytes_left;
+    m_bytes_left= 0;
+    return ret;
+  }
+
+  int skipBytes(uint len)
+  {
+    while (len > 0)
+    {
+      int ret = refreshBuffer();
+      if (ret <= 0)
+      {
+        return ret;
+      }
+
+      uint skip= std::min(m_bytes_left, len);
+      m_bytes_left-= skip;
+      m_buffer+= skip;
+      len-= skip;
+    }
+
+    return 1;
+  }
+};
+
 }  // namespace myrocks

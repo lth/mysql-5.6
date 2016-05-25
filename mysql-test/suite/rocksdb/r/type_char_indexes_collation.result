@@ -32,7 +32,7 @@ drop table t;
 set session debug= "-d,myrocks_enable_unknown_collation_index_only_scans";
 create table t (id int not null auto_increment,
 c1 varchar(1) CHARACTER SET latin1 COLLATE latin1_swedish_ci,
-c2 char(1) CHARACTER SET latin1 COLLATE latin1_general_ci,
+c2 char(1) CHARACTER SET latin1 COLLATE latin1_german2_ci,
 primary key (id),
 key sk1 (c1),
 key sk2 (c2));
@@ -106,4 +106,48 @@ insert into t values (1, REPEAT('a', 700));
 select 'email_i' as index_name, count(*) AS count from t force index(email_i);
 index_name	count
 email_i	1
+drop table t;
+create table t (id int not null auto_increment primary key,
+c varchar(32) CHARACTER SET latin1 COLLATE latin1_german2_ci,
+key sk (c));
+insert into t (c) values (_latin1 X'DF'), ('st'), ('sr'), ('ss');
+explain select hex(c) from t order by c desc;
+id	select_type	table	type	possible_keys	key	key_len	ref	rows	Extra
+1	SIMPLE	t	index	NULL	sk	35	NULL	1000	Using index
+select hex(c) from t order by c desc;
+hex(c)
+7374
+7373
+DF
+7372
+explain select hex(c) from t where c = 'ss';
+id	select_type	table	type	possible_keys	key	key_len	ref	rows	Extra
+1	SIMPLE	t	ref	sk	sk	35	const	1000	Using where; Using index
+select hex(c) from t where c = 'ss';
+hex(c)
+DF
+7373
+truncate t;
+insert into t (c) values (_latin1 X'E4'), ('ae'), ('ad'), ('af');
+explain select hex(c) from t order by c desc;
+id	select_type	table	type	possible_keys	key	key_len	ref	rows	Extra
+1	SIMPLE	t	index	NULL	sk	35	NULL	1000	Using index
+select hex(c) from t order by c desc;
+hex(c)
+6166
+6165
+E4
+6164
+explain select hex(c) from t where c = 'ae';
+id	select_type	table	type	possible_keys	key	key_len	ref	rows	Extra
+1	SIMPLE	t	ref	sk	sk	35	const	1000	Using where; Using index
+select hex(c) from t where c = 'ae';
+hex(c)
+E4
+6165
+truncate t;
+insert into t (c) values (_latin1 X'73DFE4DFE4DFE4DFE4');
+select hex(c) from t;
+hex(c)
+73DFE4DFE4DFE4DFE4
 drop table t;

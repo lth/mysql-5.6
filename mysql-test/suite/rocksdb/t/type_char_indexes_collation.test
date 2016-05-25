@@ -32,7 +32,7 @@ set session debug= "-d,myrocks_enable_unknown_collation_index_only_scans";
 # done by comparing results from a PK scan.
 create table t (id int not null auto_increment,
                 c1 varchar(1) CHARACTER SET latin1 COLLATE latin1_swedish_ci,
-                c2 char(1) CHARACTER SET latin1 COLLATE latin1_general_ci,
+                c2 char(1) CHARACTER SET latin1 COLLATE latin1_german2_ci,
                 primary key (id),
                 key sk1 (c1),
                 key sk2 (c2));
@@ -139,4 +139,27 @@ drop table t;
 create table t (id int primary key, email varchar(767), KEY email_i (email)) engine=rocksdb default charset=latin1;
 insert into t values (1, REPEAT('a', 700));
 select 'email_i' as index_name, count(*) AS count from t force index(email_i);
+drop table t;
+
+# Test handling of special german characters.
+create table t (id int not null auto_increment primary key,
+                c varchar(32) CHARACTER SET latin1 COLLATE latin1_german2_ci,
+                key sk (c));
+insert into t (c) values (_latin1 X'DF'), ('st'), ('sr'), ('ss');
+explain select hex(c) from t order by c desc;
+select hex(c) from t order by c desc;
+explain select hex(c) from t where c = 'ss';
+select hex(c) from t where c = 'ss';
+truncate t;
+
+insert into t (c) values (_latin1 X'E4'), ('ae'), ('ad'), ('af');
+explain select hex(c) from t order by c desc;
+select hex(c) from t order by c desc;
+explain select hex(c) from t where c = 'ae';
+select hex(c) from t where c = 'ae';
+truncate t;
+
+# Test whether sort characters spanning RDB_ESCAPE_LENGTH boundaries work
+insert into t (c) values (_latin1 X'73DFE4DFE4DFE4DFE4');
+select hex(c) from t;
 drop table t;
