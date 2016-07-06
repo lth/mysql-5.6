@@ -5638,6 +5638,7 @@ static my_bool cli_read_query_result(MYSQL *mysql)
   uchar *pos;
   ulong field_count;
   MYSQL_DATA *fields;
+  MYSQL_FIELD	*field;
   ulong length;
   DBUG_ENTER("cli_read_query_result");
 
@@ -5706,12 +5707,62 @@ get_info:
   if (!(mysql->server_status & SERVER_STATUS_AUTOCOMMIT))
     mysql->server_status|= SERVER_STATUS_IN_TRANS;
 
-  if (!(fields=cli_read_rows(mysql,(MYSQL_FIELD*)0, protocol_41(mysql) ? 7:5)))
-    DBUG_RETURN(1);
-  if (!(mysql->fields=unpack_fields(mysql, fields,&mysql->field_alloc,
-				    (uint) field_count,0,
-				    mysql->server_capabilities)))
-    DBUG_RETURN(1);
+  if (pos < mysql->net.read_pos + length)
+  {
+    mysql->fields= field= (MYSQL_FIELD*) alloc_root(&mysql->field_alloc, (uint) sizeof(*field)*field_count);
+    if (!field)
+    {
+      set_mysql_error(mysql, CR_OUT_OF_MEMORY, unknown_sqlstate);
+      DBUG_RETURN(1);
+    }
+    memset(field, 0, sizeof(MYSQL_FIELD)*field_count);
+
+    for (uint i= 0; i < field_count; i++, field++)
+    {
+      size_t len= (ulong) net_field_length(&pos);
+      field->name = strmake_root(&mysql->field_alloc, (char*)pos - len, len);
+      field->name_length = len;
+      pos+= len;
+
+      field->catalog=   0;
+      field->db=        0;
+      field->table=     0;
+      field->org_table= 0;
+      //field->name=      0;
+      field->org_name=  0;
+
+      field->catalog_length=	0;
+      field->db_length=		0;
+      field->table_length=	0;
+      field->org_table_length=	0;
+      //field->name_length=	0;
+      field->org_name_length=	0;
+
+      field->charsetnr= 63;
+      field->length=	-1;
+      field->type=	(enum enum_field_types) pos[0];
+      field->flags=	0;
+      field->decimals=  0;
+
+      if (IS_NUM(field->type))
+        field->flags|= NUM_FLAG;
+      field->def=0;
+      field->max_length= 0;
+      pos+= 1;
+    }
+    DBUG_ASSERT(pos == mysql->net.read_pos + length);
+  }
+  else
+  {
+    if (!(fields=cli_read_rows(mysql,(MYSQL_FIELD*)0, protocol_41(mysql) ? 7:5)))
+      DBUG_RETURN(1);
+    if (!(mysql->fields=unpack_fields(mysql, fields,&mysql->field_alloc,
+                                      (uint) field_count,0,
+                                      mysql->server_capabilities)))
+      DBUG_RETURN(1);
+
+  }
+
   mysql->status= MYSQL_STATUS_GET_RESULT;
   mysql->field_count= (uint) field_count;
   DBUG_PRINT("exit",("ok"));
@@ -5724,6 +5775,7 @@ cli_read_query_result_nonblocking(MYSQL *mysql, my_bool *ret)
   NET *net= &mysql->net;
   uchar *pos;
   ulong field_count;
+  MYSQL_FIELD	*field;
   ulong length;
   DBUG_ENTER(__func__);
 
@@ -5817,25 +5869,67 @@ get_info:
   }
 
   if (net->async_read_query_result_status == NET_ASYNC_READ_QUERY_RESULT_FIELD_INFO) {
-    MYSQL_DATA *fields;
-    net_async_status status =
-      cli_read_rows_nonblocking(mysql, protocol_41(mysql) ? 7:5, &fields);
-    if (status == NET_ASYNC_NOT_READY) {
-      DBUG_RETURN(NET_ASYNC_NOT_READY);
-    }
+    if (pos < mysql->net.read_pos + mysql->packet_length)
+    {
+      mysql->fields= field= (MYSQL_FIELD*) alloc_root(&mysql->field_alloc, (uint) sizeof(*field)*mysql->field_count);
+      if (!field)
+      {
+        net->async_read_query_result_status = NET_ASYNC_READ_QUERY_RESULT_IDLE;
+        *ret = 1;
+        DBUG_RETURN(NET_ASYNC_COMPLETE);
+      }
+      memset(field, 0, sizeof(MYSQL_FIELD)*mysql->field_count);
 
-    if (!fields) {
-      net->async_read_query_result_status = NET_ASYNC_READ_QUERY_RESULT_IDLE;
-      *ret = 1;
-      DBUG_RETURN(NET_ASYNC_COMPLETE);
-    }
+      for (uint i= 0; i < mysql->field_count; i++, field++)
+      {
+        field->catalog=   0;
+        field->db=        0;
+        field->table=     0;
+        field->org_table= 0;
+        field->name=      0;
+        field->org_name=  0;
 
-    if (!(mysql->fields=unpack_fields(mysql, fields,&mysql->field_alloc,
-                                      mysql->field_count,0,
-                                      mysql->server_capabilities))) {
-      net->async_read_query_result_status = NET_ASYNC_READ_QUERY_RESULT_IDLE;
-      *ret = 1;
-      DBUG_RETURN(NET_ASYNC_COMPLETE);
+        field->catalog_length=	0;
+        field->db_length=		0;
+        field->table_length=	0;
+        field->org_table_length=	0;
+        field->name_length=	0;
+        field->org_name_length=	0;
+
+        field->charsetnr= uint2korr(pos);
+        field->length=	(uint) uint4korr(pos+2);
+        field->type=	(enum enum_field_types) pos[6];
+        field->flags=	uint2korr(pos+7);
+        field->decimals=  (uint) pos[9];
+
+        if (IS_NUM(field->type))
+          field->flags|= NUM_FLAG;
+        field->def=0;
+        field->max_length= 0;
+        pos+= 10;
+      }
+    }
+    else
+    {
+      MYSQL_DATA *fields;
+      net_async_status status =
+        cli_read_rows_nonblocking(mysql, protocol_41(mysql) ? 7:5, &fields);
+      if (status == NET_ASYNC_NOT_READY) {
+        DBUG_RETURN(NET_ASYNC_NOT_READY);
+      }
+      if (!fields) {
+        net->async_read_query_result_status = NET_ASYNC_READ_QUERY_RESULT_IDLE;
+        *ret = 1;
+        DBUG_RETURN(NET_ASYNC_COMPLETE);
+      }
+
+      if (!(mysql->fields=unpack_fields(mysql, fields,&mysql->field_alloc,
+                                        mysql->field_count,0,
+                                        mysql->server_capabilities))) {
+        net->async_read_query_result_status = NET_ASYNC_READ_QUERY_RESULT_IDLE;
+        *ret = 1;
+        DBUG_RETURN(NET_ASYNC_COMPLETE);
+      }
     }
   }
 

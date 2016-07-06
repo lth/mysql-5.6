@@ -7972,7 +7972,8 @@ void append_table_headings(DYNAMIC_STRING *ds,
   {
     if (col_idx)
       dynstr_append_mem(ds, "\t", 1);
-    replace_dynstr_append(ds, field[col_idx].name);
+    if (field[col_idx].name)
+      replace_dynstr_append(ds, field[col_idx].name);
   }
   dynstr_append_mem(ds, "\n", 1);
 }
@@ -9910,7 +9911,6 @@ int main(int argc, char **argv)
       case Q_QUERY_ATTRS_RESET:
         mysql_options(&cur_con->mysql, MYSQL_OPT_QUERY_ATTR_RESET, 0);
         break;
-
       case Q_CONN_ATTRS_ADD:
         do_conn_attrs_add(command);
         break;

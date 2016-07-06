@@ -3746,14 +3746,18 @@ print_table_data(MYSQL_RES *result)
     (void) tee_fputs("|", PAGER);
     for (uint off=0; (field = mysql_fetch_field(result)) ; off++)
     {
-      uint name_length= (uint) strlen(field->name);
-      uint numcells= charset_info->cset->numcells(charset_info,
-                                                  field->name,
-                                                  field->name + name_length);
-      uint display_length= field->max_length + name_length - numcells;
+      uint display_length= 0;
+      if (field->name != nullptr)
+      {
+        uint name_length= (uint) strlen(field->name);
+        uint numcells= charset_info->cset->numcells(charset_info,
+                                                    field->name,
+                                                    field->name + name_length);
+        display_length= field->max_length + name_length - numcells;
+      }
       tee_fprintf(PAGER, " %-*s |",
                   min<int>(display_length, MAX_COLUMN_LENGTH),
-                  field->name);
+                  field->name ? field->name : "");
       num_flag[off]= IS_NUM(field->type);
     }
     (void) tee_fputs("\n", PAGER);
@@ -4822,6 +4826,8 @@ sql_real_connect(char *host,char *database,char *user,char *password,
   mysql_options(&mysql, MYSQL_OPT_CONNECT_ATTR_RESET, 0);
   mysql_options4(&mysql, MYSQL_OPT_CONNECT_ATTR_ADD, 
                  "program_name", "mysql");
+  mysql_options4(&mysql, MYSQL_OPT_CONNECT_ATTR_ADD,
+                 "protocol_mode", "2");
   mysql_options(&mysql, MYSQL_OPT_CAN_HANDLE_EXPIRED_PASSWORDS, &handle_expired);
 
   if (!mysql_real_connect(&mysql, host, user, password,

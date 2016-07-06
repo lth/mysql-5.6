@@ -3491,6 +3491,8 @@ static const char *protocol_mode_names[] =
 {
   "",
   "MINIMAL_OBJECT_NAMES_IN_RESULT_SET_METADATA",
+  "COLUMN_NAMES_IN_RESULT_SET_METADATA",
+  "NO_NAMES_IN_RESULT_SET_METADATA",
   NULL
 };
 

@@ -811,13 +811,7 @@ bool Protocol::send_result_set_metadata(List<Item> *list, uint flags)
   String *local_packet= prot.storage_packet();
   const CHARSET_INFO *thd_charset= thd->variables.character_set_results;
   DBUG_ENTER("send_result_set_metadata");
-
-  if (flags & SEND_NUM_ROWS)
-  {				// Packet with number of elements
-    uchar *pos= net_store_length(buff, list->elements);
-    if (my_net_write(&thd->net, buff, (size_t) (pos-buff)))
-      DBUG_RETURN(1);
-  }
+  uchar *pos= (uchar*) local_packet->ptr()+local_packet->length();
 
 #ifndef DBUG_OFF
   field_types= (enum_field_types*) thd->alloc(sizeof(field_types) *
@@ -825,9 +819,27 @@ bool Protocol::send_result_set_metadata(List<Item> *list, uint flags)
   uint count= 0;
 #endif
 
+  if (flags & SEND_NUM_ROWS)
+  {				// Packet with number of elements
+    if (thd->variables.protocol_mode == PROTO_MODE_NO_NAMES_IN_RSMD ||
+        thd->variables.protocol_mode == PROTO_MODE_COL_NAMES_IN_RSMD)
+    {
+      if (local_packet->realloc(local_packet->length()+10))
+        goto err;
+      pos= (uchar*) local_packet->ptr();
+      pos= net_store_length(pos, list->elements);
+      local_packet->length((uint) (pos - (uchar*)local_packet->ptr()));
+    }
+    else
+    {
+      uchar *pos= net_store_length(buff, list->elements);
+      if (my_net_write(&thd->net, buff, (size_t) (pos-buff)))
+        DBUG_RETURN(1);
+    }
+  }
+
   while ((item=it++))
   {
-    char *pos;
     const CHARSET_INFO *cs= system_charset_info;
     Send_field field;
     item->make_field(&field);
@@ -836,60 +848,90 @@ bool Protocol::send_result_set_metadata(List<Item> *list, uint flags)
     if (field.type == MYSQL_TYPE_VARCHAR)
       field.type= MYSQL_TYPE_VAR_STRING;
 
-    prot.prepare_for_resend();
+    if (!(thd->variables.protocol_mode == PROTO_MODE_NO_NAMES_IN_RSMD ||
+          thd->variables.protocol_mode == PROTO_MODE_COL_NAMES_IN_RSMD))
+    {
+      prot.prepare_for_resend();
+    }
 
     if (thd->client_capabilities & CLIENT_PROTOCOL_41)
     {
-      if (store_result_set_metadata_object_names(thd, &prot, &field) ||
-	  local_packet->realloc(local_packet->length()+12))
-	goto err;
-      /* Store fixed length fields */
-      pos= (char*) local_packet->ptr()+local_packet->length();
-      *pos++= 12;				// Length of packed fields
-      /* inject a NULL to test the client */
-      DBUG_EXECUTE_IF("poison_rs_fields", pos[-1]= 0xfb;);
-      if (item->charset_for_protocol() == &my_charset_bin || thd_charset == NULL)
+      if (thd->variables.protocol_mode == PROTO_MODE_NO_NAMES_IN_RSMD ||
+          thd->variables.protocol_mode == PROTO_MODE_COL_NAMES_IN_RSMD)
       {
-        /* No conversion */
-        int2store(pos, item->charset_for_protocol()->number);
-        int4store(pos+2, field.length);
+        CHARSET_INFO *src_cs= system_charset_info;
+        const CHARSET_INFO *dest_cs= thd->variables.character_set_results;
+        if (prot.store(field.col_name, strlen(field.col_name), src_cs, dest_cs))
+          goto err;
+        if (local_packet->realloc(local_packet->length()+10))
+          goto err;
+        /* Store fixed length fields */
+        pos= (uchar*) local_packet->ptr()+local_packet->length();
       }
       else
       {
-        /* With conversion */
-        uint32 field_length, max_length;
-        int2store(pos, thd_charset->number);
-        /*
-          For TEXT/BLOB columns, field_length describes the maximum data
-          length in bytes. There is no limit to the number of characters
-          that a TEXT column can store, as long as the data fits into
-          the designated space.
-          For the rest of textual columns, field_length is evaluated as
-          char_count * mbmaxlen, where character count is taken from the
-          definition of the column. In other words, the maximum number
-          of characters here is limited by the column definition.
-
-          When one has a LONG TEXT column with a single-byte
-          character set, and the connection character set is multi-byte, the
-          client may get fields longer than UINT_MAX32, due to
-          <character set column> -> <character set connection> conversion.
-          In that case column max length does not fit into the 4 bytes
-          reserved for it in the protocol.
-        */
-        max_length= (field.type >= MYSQL_TYPE_TINY_BLOB &&
-                     field.type <= MYSQL_TYPE_BLOB) ?
-                     field.length / item->collation.collation->mbminlen :
-                     field.length / item->collation.collation->mbmaxlen;
-        field_length= char_to_byte_length_safe(max_length,
-                                               thd_charset->mbmaxlen);
-        int4store(pos + 2, field_length);
+        if (store_result_set_metadata_object_names(thd, &prot, &field) ||
+            local_packet->realloc(local_packet->length()+13))
+          goto err;
+        pos= (uchar*) local_packet->ptr()+local_packet->length();
+        *pos++= 12;                              // Length of packed fields
       }
-      pos[6]= field.type;
-      int2store(pos+7,field.flags);
-      pos[9]= (char) field.decimals;
-      pos[10]= 0;				// For the future
-      pos[11]= 0;				// For the future
-      pos+= 12;
+      /* inject a NULL to test the client */
+      DBUG_EXECUTE_IF("poison_rs_fields", pos[-1]= 0xfb;);
+      if (!(thd->variables.protocol_mode == PROTO_MODE_NO_NAMES_IN_RSMD ||
+            thd->variables.protocol_mode == PROTO_MODE_COL_NAMES_IN_RSMD))
+      {
+        if (item->charset_for_protocol() == &my_charset_bin || thd_charset == NULL)
+        {
+          /* No conversion */
+          int2store(pos, item->charset_for_protocol()->number);
+          pos+= 2;
+          int4store(pos, field.length);
+          pos+= 4;
+        }
+        else
+        {
+          /* With conversion */
+          uint32 field_length, max_length;
+          int2store(pos, thd_charset->number);
+          pos+= 2;
+          /*
+            For TEXT/BLOB columns, field_length describes the maximum data
+            length in bytes. There is no limit to the number of characters
+            that a TEXT column can store, as long as the data fits into
+            the designated space.
+            For the rest of textual columns, field_length is evaluated as
+            char_count * mbmaxlen, where character count is taken from the
+            definition of the column. In other words, the maximum number
+            of characters here is limited by the column definition.
+
+            When one has a LONG TEXT column with a single-byte
+            character set, and the connection character set is multi-byte, the
+            client may get fields longer than UINT_MAX32, due to
+            <character set column> -> <character set connection> conversion.
+            In that case column max length does not fit into the 4 bytes
+            reserved for it in the protocol.
+            */
+          max_length= (field.type >= MYSQL_TYPE_TINY_BLOB &&
+                       field.type <= MYSQL_TYPE_BLOB) ?
+            field.length / item->collation.collation->mbminlen :
+            field.length / item->collation.collation->mbmaxlen;
+          field_length= char_to_byte_length_safe(max_length,
+                                                 thd_charset->mbmaxlen);
+          int4store(pos, field_length);
+          pos+= 4;
+        }
+      }
+      *pos++= field.type;
+      if (!(thd->variables.protocol_mode == PROTO_MODE_NO_NAMES_IN_RSMD ||
+            thd->variables.protocol_mode == PROTO_MODE_COL_NAMES_IN_RSMD))
+      {
+        int2store(pos,field.flags);
+        pos+= 2;
+        *pos++= (char) field.decimals;
+        int2store(pos, 0);
+        pos+= 2;
+      }
     }
     else
     {
@@ -899,7 +941,7 @@ bool Protocol::send_result_set_metadata(List<Item> *list, uint flags)
 		     cs, thd_charset) ||
 	  local_packet->realloc(local_packet->length()+10))
 	goto err;
-      pos= (char*) local_packet->ptr()+local_packet->length();
+      pos= (uchar*) local_packet->ptr()+local_packet->length();
       pos[0]=3;
       int3store(pos+1,field.length);
       pos[4]=1;
@@ -909,27 +951,41 @@ bool Protocol::send_result_set_metadata(List<Item> *list, uint flags)
       pos[9]= (char) field.decimals;
       pos+= 10;
     }
-    local_packet->length((uint) (pos - local_packet->ptr()));
+    local_packet->length((uint) (pos - (uchar*)local_packet->ptr()));
     if (flags & SEND_DEFAULTS)
       item->send(&prot, &tmp);			// Send default value
-    if (prot.write())
-      DBUG_RETURN(1);
+    if (!(thd->variables.protocol_mode == PROTO_MODE_NO_NAMES_IN_RSMD ||
+          thd->variables.protocol_mode == PROTO_MODE_COL_NAMES_IN_RSMD))
+    {
+      if (prot.write())
+        DBUG_RETURN(1);
+    }
 #ifndef DBUG_OFF
     field_types[count++]= field.type;
 #endif
   }
 
-  if (flags & SEND_EOF)
+  if (thd->variables.protocol_mode == PROTO_MODE_NO_NAMES_IN_RSMD ||
+      thd->variables.protocol_mode == PROTO_MODE_COL_NAMES_IN_RSMD)
   {
-    /*
-      Mark the end of meta-data result set, and store thd->server_status,
-      to show that there is no cursor.
-      Send no warning information, as it will be sent at statement end.
-    */
-    if (write_eof_packet(thd, &thd->net, thd->server_status,
-                         thd->get_stmt_da()->current_statement_warn_count()))
+    if (prot.write())
       DBUG_RETURN(1);
   }
+  else
+  {
+    if (flags & SEND_EOF)
+    {
+      /*
+        Mark the end of meta-data result set, and store thd->server_status,
+        to show that there is no cursor.
+        Send no warning information, as it will be sent at statement end.
+        */
+      if (write_eof_packet(thd, &thd->net, thd->server_status,
+                           thd->get_stmt_da()->current_statement_warn_count()))
+        DBUG_RETURN(1);
+    }
+  }
+
   DBUG_RETURN(prepare_for_send(list->elements));
 
 err:
@@ -1162,6 +1218,12 @@ bool Protocol_text::store_long(longlong from)
   field_pos++;
 #endif
   char buff[20];
+  if (thd->variables.protocol_mode == PROTO_MODE_NO_NAMES_IN_RSMD ||
+      thd->variables.protocol_mode == PROTO_MODE_COL_NAMES_IN_RSMD)
+  {
+      int4store(buff, from);
+      return net_store_data((uchar*) buff, 4);
+  }
   return net_store_data((uchar*) buff,
 			(size_t) (int10_to_str((long int)from, buff,
                                                (from <0)?-10:10)-buff));
@@ -1176,6 +1238,12 @@ bool Protocol_text::store_longlong(longlong from, bool unsigned_flag)
   field_pos++;
 #endif
   char buff[22];
+  if (thd->variables.protocol_mode == PROTO_MODE_NO_NAMES_IN_RSMD ||
+      thd->variables.protocol_mode == PROTO_MODE_COL_NAMES_IN_RSMD)
+  {
+      int8store(buff, from);
+      return net_store_data((uchar*) buff, 8);
+  }
   return net_store_data((uchar*) buff,
 			(size_t) (longlong10_to_str(from,buff,
                                                     unsigned_flag ? 10 : -10)-
@@ -1232,7 +1300,27 @@ bool Protocol_text::store_internal(Field *field,
   String str(buff,sizeof(buff), &my_charset_bin);
   const CHARSET_INFO *tocs= this->thd->variables.character_set_results;
 
-  String *res = field->val_str(&str);
+  String *res;
+  if ((thd->variables.protocol_mode == PROTO_MODE_NO_NAMES_IN_RSMD ||
+       thd->variables.protocol_mode == PROTO_MODE_COL_NAMES_IN_RSMD) && 
+      (field->type() == MYSQL_TYPE_LONGLONG || field->type() == MYSQL_TYPE_LONG))
+  {
+    if (field->type() == MYSQL_TYPE_LONGLONG)
+    {
+      int8store(buff, field->val_int());
+      str.length(8);
+    }
+    else
+    {
+      int4store(buff, field->val_int());
+      str.length(4);
+    }
+    res = &str;
+  }
+  else
+  {
+    res = field->val_str(&str);
+  }
   if(nullptr == res)
     return store_null();
 

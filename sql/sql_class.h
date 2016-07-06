@@ -196,6 +196,10 @@ enum enum_protocol_mode
   PROTO_MODE_OFF= 0,
   /* Minimal object names in the result set metadata. */
   PROTO_MODE_MINIMAL_OBJECT_NAMES_IN_RSMD= 1,
+  /* Only column names in the result set metadata. */
+  PROTO_MODE_COL_NAMES_IN_RSMD= 2,
+  /* No names in the result set metadata. */
+  PROTO_MODE_NO_NAMES_IN_RSMD= 3,
 };
 
 extern char internal_table_name[2];

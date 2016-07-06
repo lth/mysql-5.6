@@ -9877,9 +9877,8 @@ static bool find_mpvio_user(MPVIO_EXT *mpvio)
   DBUG_RETURN(0);
 }
 
-
 static bool
-read_client_connect_attrs(char **ptr, size_t *max_bytes_available,
+read_client_connect_attrs(MPVIO_EXT *mpvio, char **ptr, size_t *max_bytes_available,
                           const CHARSET_INFO *from_cs)
 {
   DBUG_ENTER ("read_client_connect_attrs");
@@ -10260,7 +10259,7 @@ static bool parse_com_change_user_packet(MPVIO_EXT *mpvio, uint packet_length)
   bytes_remaining_in_packet= ptr<end ? end-ptr : 0;
 
   if ((mpvio->client_capabilities & CLIENT_CONNECT_ATTRS) &&
-      read_client_connect_attrs(&ptr, &bytes_remaining_in_packet,
+      read_client_connect_attrs(mpvio, &ptr, &bytes_remaining_in_packet,
                                 mpvio->charset_adapter->charset()))
     return packet_error;
 
@@ -10531,7 +10530,7 @@ skip_to_ssl:
     client_plugin= &empty_c_string[0];
 
   if ((mpvio->client_capabilities & CLIENT_CONNECT_ATTRS) &&
-      read_client_connect_attrs(&end, &bytes_remaining_in_packet,
+      read_client_connect_attrs(mpvio, &end, &bytes_remaining_in_packet,
                                 mpvio->charset_adapter->charset()))
     return packet_error;
 
@@ -11044,6 +11043,21 @@ server_mpvio_update_thd(THD *thd, MPVIO_EXT *mpvio)
   thd->security_ctx->user= mpvio->auth_info.user_name;
   if (thd->client_capabilities & CLIENT_IGNORE_SPACE)
     thd->variables.sql_mode|= MODE_IGNORE_SPACE;
+
+
+  mysql_mutex_lock(&thd->LOCK_thd_data);
+  const auto& it= thd->connection_attrs_map.find("protocol_mode");
+  if (it != thd->connection_attrs_map.end())
+  {
+    if (it->second == "1") {
+      thd->variables.protocol_mode= PROTO_MODE_MINIMAL_OBJECT_NAMES_IN_RSMD;
+    } else if (it->second == "2") {
+      thd->variables.protocol_mode= PROTO_MODE_COL_NAMES_IN_RSMD;
+    } else if (it->second == "3") {
+      thd->variables.protocol_mode= PROTO_MODE_NO_NAMES_IN_RSMD;
+    }
+  }
+  mysql_mutex_unlock(&thd->LOCK_thd_data);
 }
 
 /**
