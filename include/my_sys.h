@@ -825,6 +825,9 @@ extern char *strmake_root(MEM_ROOT *root, const char *str, size_t len);
 extern void *memdup_root(MEM_ROOT *root, const void *str, size_t len);
 
 typedef struct NET NET;
+#if !defined(ZSTD_CLEVEL_DEFAULT)
+#define ZSTD_CLEVEL_DEFAULT 3
+#endif
 extern bool my_compress(NET *, uchar *, size_t *, size_t *, int);
 extern bool my_uncompress(NET *, uchar *, size_t, size_t *);
 extern uchar *my_compress_alloc(NET *net, const uchar *packet, size_t *len,
